@@ -1,0 +1,404 @@
+<h1 id="manual-for-data-acquisition-in-labview">Manual for Data Acquisition in LabVIEW</h1>
+<h2 id="data-acquisition">Data Acquisition</h2>
+<h4 id="overview">Overview</h4>
+<p>This .vi coordinates the acquisition of 3 cameras, up to 7 channels of analog data, controls solenoid firing, and can be used to flash LEDs in concert with image acquisition.</p>
+<h4 id="intrinsic-optical-signals-ios">Intrinsic Optical Signals (IOS)</h4>
+<p><img src="IOSCamSnippet.png" alt="Code snippet pertaining to IOS image acquisition" /><br />
+The script for acquiring IOS images through the Dalsa Pantera 1M60 CCD camera is based on the LabVIEW example: IMAQ: LL Triggered Ring. A ring buffer allows for continuous image acquisition in the presence of fluctuating activity in the operating system without dropping frames. The ring buffer allows for five memory slots in system memory (see point &quot;A&quot; in code snippet above). Newly acquired frames are placed in one of these memory slots until the operating system is able to process them and move them to the final location (see point &quot;B&quot; in code snippet). In principal this process can continue indefinitely, however, the total acquisition time for this .vi has been restricted to a 5 minute maximum to prevent unmanageable file sizes. For more on the ring buffer see this <a href="http://www.ni.com/white-paper/4001/en/">LabVIEW White-paper</a>.</p>
+<p>The exposure mode, exposure time, and binning properties of the Dalsa camera can be set using the &quot;IMAQ Set Camera Attribute&quot; block (see point &quot;C&quot; in the code snippet). The exposure time has previously been set to 8333 microseconds, but can be increased to augment the amount of measured light. Care should be taken that the exposure time and the acquisition rate of the camera are compatible. Long exposure times are not compatible with fast acquisition speeds. Pixel binning provides a way to increase the signal to noise ratio (SNR) by adding the pixel intensities together from nxn pixels. A binning size of 4x4 has been used for IOS, giving a 256x256 pixel image. For widefield GCaMP imaging, however, 8x8 binning is needed for increased sensitivity to GCaMP signals. If binning is set to 8x8, the camera will acquire 128x128 pixel images. For more about binning, see <a href="http://info.adimec.com/blogposts/bid/104547/Binning-to-increase-SNR-and-frame-rate-with-CCD-and-CMOS-industrial-cameras">this link</a></p>
+<p>The acquisition of each IOS image is triggered by an external signal (see point &quot;D&quot; in code snippet). A counter (ctr0) on the National Instruments BNC-2090 board is used to send transistor-transistor logic (TTL) pulses to the camera. The user sets the the source and frequency of the counter (see User Interface section below), which controls the frequency of the TTL signal. The TTL circuit in the camera recognizes a 0 voltage sent from the BNC2090a board to indicate a logical &quot;0&quot;. Voltages of 5 Volts set the circuit to a logical &quot;1&quot; which triggers image acquisition.</p>
+<p>The physical output corresponding to counter outputs are found on PFI channels 12 and 13 of the digital output block. To set the counter frequency, create a new virtual channel using the DAQmx driver (see point &quot;D&quot; in code snippet). The type of channel should be set as a counter using the option &quot;CO Pulse Freq&quot;. Once the task has been started it will generate 0/5 Volt pulses until the task is stopped. To connect the TTL signal with the camera, the output of PFI channel 12 (the physical channel corresponding to counter 1) was routed to the User2 BNC output and connected to the camera card.</p>
+<blockquote>
+<p>Note: If IOS image acquisition returns a &quot;timout&quot; error in LabVIEW, it is typically due to some problem with the connection between the counter on PFI12 and the camera. Check these connections with an oscilloscope.</p>
+</blockquote>
+<p>IOS camera acquisition will occur until the correct number of camera frames have been acquired (see point &quot;E&quot; in code snippet). Once each frame has been acquired it is moved to a buffer location until the operating system is able to extract the image from the buffer and convert the image to a numerical array. The array is then &quot;streamed&quot; to a memory location within a binary file (see point &quot;B&quot; in the code snippet). The bytes within the image array are ordered in the binary file according to the big-endian scheme. After all images have been acquired, the binary file is closed and moved user-defined location on a local or external hard drive. Custom MATLAB code is needed to convert the image arrays into readable data (see section on MATLAB code below). Knowing that bytes are in big-endian order is vital to being able to recover the images in MATLAB.</p>
+<h4 id="whisker-imaging-for-tracking-behavior">Whisker imaging for tracking behavior</h4>
+<p><img src="WhiskCamSnippet.png" alt="Code snippet pertaining to the whisker image acquisition" /><br />
+Whiskers are tracked by illuminating them from below with a planar array of 660 nm LEDs and acquiring images of the whiskers from above with a Basler ac640 gigE camera. Prior to imaging, the camera properties should be set in the NI Measurement and Automation Explorer (NI-MAX). Each frame should be restricted to a width of 30 pixels and a height of 350 pixels. Each pixel had a depth of 8 bits. The triggering setting of the camera should be turned on.</p>
+<p>The image acquisition is configured to operate continuously with each acquired image being stored within 1 of 5 buffer locations until it can be processed (see point &quot;A&quot; on the code snippet).</p>
+<p>As with the IOS camera, the whisker camera is configured to acquire images upon receiving a TTL pulse from an external source (see point &quot;B&quot; in the code snippet). The NI BNC2090a has two onboard counters. The first is appropriated for the IOS image acquisition. The second counter is used to trigger the whisker camera. The physical channel for &quot;counter 2&quot; is PFI13 and is physically wired to input line 1 of the whisker camera. Voltages below 1.2 Volts are interpreted as a logical &quot;0&quot; by the TTL circuit, while voltages &gt; 2.2 are interpreted as logical &quot;1&quot;. The frequency and duty cycle of the counter is set by creating a virtual &quot;pulsed frequency counter&quot; channel with the DAQmx driver (see point &quot;B&quot; in the code snippet). Once the counter task is started the TTL pulses are sent to the whisker camera and begin triggering acquisition.</p>
+<p>Each acquired image is temporarily placed in a buffer until it can be extracted and converted into a numerical array. Each numerical array is saved to a location within a binary file. The order of bytes within the image array are set according to the little-endian scheme (see point &quot;C&quot; in code snippet). Note that this ordering is not the same as for the IOS camera. The image arrays can be converted into a readable format using MATLAB code discussed below.</p>
+<p>Mice move their whiskers at a rate of ~10 Hz, which necessitates that images from the whisker camera be acquired at a high rate to accurately track movement. Historically images could be reliably acquired at 150 frames per second. However, installation of software by the Penn State ESM department has reduced this reliability. Occasionally, many images of the whiskers will be &quot;dropped&quot; and not be saved as part of the _WhiskerCam.bin file. The number of dropped frames is tracked during acquisition. This is done by comparing the current buffer number (ie: frame number) to the previous frame number to determine whether any frame number was skipped (see point &quot;D&quot; in code snippet below). If a skip is detected, the first missing frame number and the number of subsequent skipped frames are tracked in a list. This list is exported along with the trial notes (See point &quot;E&quot; in code snippet and experimental notes section below).</p>
+<p>Acquisition of the whisker images continues until the number of acquired frames and dropped frames reaches the expected number.</p>
+<h4 id="analog-data-acquisition">Analog Data Acquisition</h4>
+<p><img src="AnalogSnippet.png" alt="Code snippet for analog data acquisition" /><br />
+External voltages, such as neural recordings, tachometer voltages, force sensor voltages, solenoid voltages, etc. can be recorded by plugging the voltage source into one of the analog input channels on the BNC2090a.</p>
+<p>The physical channels to be acquired can be selected on the user-interface (see description below) and assigned to virtual channels for analog input voltage. The maximum and minimum voltages are set to +/- 10 Volts (see point &quot;A&quot; in code snippet). The acquisition is set to begin acquiring upon the first detected TTL pulse sent from channel PFI12 (corresponding to the counter used to acquire images from the CBV camera, see point &quot;B&quot; in code).</p>
+<p>The acquisition frequency is common to all of the channels selected using the drop-down menu. If a different acquisition frequency is desired, an additional virtual channel needs to be created for that frequency.</p>
+<p>The acquired analog data is saved to a .tdms file (see point &quot;C&quot; in code snippet). This file type can be imported into a readable form using the MATLAB scripts discussed below. The .tdms file also contains the experimental notes for a given trial (see section on experimental notes).</p>
+<h4 id="web-camera">Web Camera</h4>
+<p><img src="WebCamSnippet.png" alt="Code snippet for web camera image acquisition" /><br />
+A web camera is useful for monitoring the state of the animal during experiments. The camera is connected directly to the computer via USB and grabbed images are sent directly to a .avi file. Each grabbed frame has the elapsed time since the beginning of the trial overlayed on the image before it is saved so that the images can be matched to other recorded events (see point &quot;A&quot; in code snippet).</p>
+<h4 id="experimental-notes">Experimental Notes</h4>
+<p><img src="TrianNotesSnippet.png" alt="Code snippet for creating trial notes" /><br />
+Experimental parameters and user notes are saved for later reference in the .tdms file that also contains the acquired analog data. The format of the experimental notes is very specific since values have to be matched with a descriptive label. If any new notes are desired or current note fields are not needed, care must be taken that the values and their labels continue to match after any changes are made. This is done at point &quot;A&quot; in the code snippet. The experimental notes are converted into a readable form using the MATLAB code described below.</p>
+<h2 id="control">Control</h2>
+<h4 id="solenoid-control-for-puffing-whiskers">Solenoid control for puffing whiskers</h4>
+<p><img src="StimSnippet.png" alt="Code snippet for solenoid control" /><br />
+A set of four solenoids can be controlled by sending TTL pulses from the digital out terminal block of the BNC2090a to a solenoid control board. The user is able to set which physical channels will control the solenoids on the user interface.</p>
+<p>The firing activity of the physical channels are determined by the values within an array of four boolean variables (see point &quot;A&quot; in the code snippet). Each boolean value in the array is written to one of the physical channels (see point &quot;B&quot; in the code snippet). The values of the boolean array at a given time during acquisition are determined by the user. The user defines the ratio of puffs coming from each solenoid, the interval between puffs, and the puff duration (see point &quot;C&quot; in the code snippet). The LabVIEW .vi randomizes the order of the requested puffs (see point &quot;D&quot; in the code snippet).</p>
+<p>The timing of the solenoid firing is based on the acquisition of the IOS images. The portion of the code that controls solenoid firing receives the index of the latest frame acquired from the IOS camera. The code uses these frame indexes to track the inter-stimulus interval (ISI), that is the time that has elapsed since the last solenoid was fired. This is done using the modulo function (see point &quot;E&quot; in the code snippet). The remainder of the the operation: &quot;frame_index <em>mod</em> ISI&quot; tracks the phase of the current frame within the inter-stimulus interval. When the remainder is equal to zero, a cycle of the inter-stimulus interval has been reached.</p>
+<p>The user may want to occur at some lag within the inter-stimulus interval. For example, the first solenoid may be set to fire 10 seconds after the beginning of recording. This lag is easily incorporated into the monitoring of the remainder of the modulo function. Instead of firing at a remainder equal to zero, the solenoid may be fired at some other remainder (see point &quot;E&quot; in code snippet). For example, if the IOS images are acquired at 30 frames per second (fps), and a lag of 10 seconds is desired, the solenoids will fire at a &quot;phase&quot; of 30 fps * 10 seconds = 300 frames into the inter-stimulus interval.</p>
+<p>The modulo function also tracks the order of solenoid firing during the trial (see point &quot;E&quot; in the code snippet). The quotient of the modulo function tracks the number of ISI cycles that have been completed. Imagine that the user desires 2 puffs to the right whisker pad for every 2 puffs to the left whisker pad and that LabVIEW randomized the order of the puffs to be [right,left,left,right]. While the quotient of the modulo equals &quot;0&quot; the right whisker pad will be puffed. When the quotient equals &quot;1&quot; the left pad will be puffed, and so on.</p>
+<p>In order to fire the solenoid for the correct duration, a boolean &quot;T&quot; signal will be sent to the physical channel as long as modulo function returns a remainder that is between the correct ISI frame and the ISI frame + stimulus duration. This is done by querying whether the current frame is within the range &quot;ISI + lag &lt; Current Frame Number &lt; ISI + lag + Stimulus Duration&quot;</p>
+<h4 id="led-flash-control-for-gcampspectroscopy">LED flash control for GCaMP/Spectroscopy</h4>
+<p><img src="TrialOnSnippet.png" alt="Code snippet for indicating to the arduino that data acquisition is taking place" /><br />
+For widefield GCaMP imaging and spectroscopy, camera acquisition and LED illumination must be coordinated. The coordination between window camera and LED triggering is managed by an Arduino microcontroller. The Arduino program for controlling LED flashes is discussed below (see section on Arduino script for controlling LED flashing). The Arduino receives the camera trigger from the BNC2090a and distributes the TTL pulses to the camera and to the appropriate LEDs.</p>
+<p>The absence of a pulse from the counter between trials means that the flashing LEDs will only occur between acquisitions. This may have the disadvantage of creating an association between whisker stimuli and flashing LEDs for the animal. To circumvent this possibility, LabVIEW sends a boolean &quot;T&quot; value to digital port 0, line 7 to indicate when acquisition occurs. During acquisition, the signal used to flash the LEDs and trigger the camera comes from the counter on board the BNC2090a. Between acquisitions, the Arduino code begins monitoring a different channel for TTL pulses. This allows for another TTL pulse source, such as a waveform generator, to be used in between trials so that flashing LEDs remain more or less constant throughout the imaging session.</p>
+<h2 id="user-interface">User interface</h2>
+<h3 id="controls">Controls</h3>
+<h4 id="recording-time">Recording Time</h4>
+<p><img src="RecordingTime.jpg" alt="User control dial to set the duration of data acquisition" /><br />
+The ring dial allows the user to set the recording time in 30 second increments up to a maximum recording time of 5 minutes. The maximum was chosen to limit the size of the recorded data in a given file. The maximum time and the size of the increment can be set by right-clicking on the recorded time ring dial and selecting &quot;properties&quot;. The increment value can be set under the &quot;Data Entry&quot; tab of the properties menu, the maximum value selectable on the dial can be set on the &quot;Scale&quot; tab.</p>
+<h4 id="stop-button">Stop button</h4>
+<p><img src="StopButton.jpg" alt="Stop button that terminates processes and stops the trial" /><br />
+Use this button to terminate all running processes and stop the trial.</p>
+<blockquote>
+<p>Important: Do not use the &quot;abort&quot; button located near the &quot;run&quot; button. The abort button will stop the trial without finishing processes that are currently running and could lead to unstable conditions in the next trial.</p>
+</blockquote>
+<h4 id="session-notes">Session Notes</h4>
+<p><img src="TrialNotes.jpg" alt="Session notes fields" /><br />
+The session notes section allows for information about the trial to be stored with the trial data. The table below gives a brief description of each field:</p>
+<table style="width:86%;">
+<colgroup>
+<col width="26%" />
+<col width="59%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th align="left">Field</th>
+<th align="left">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Experimenter</td>
+<td align="left">Person responsible for the data in the file</td>
+</tr>
+<tr class="even">
+<td align="left">Animal ID</td>
+<td align="left">Identifier for the current animal</td>
+</tr>
+<tr class="odd">
+<td align="left">Imaged Hemisphere</td>
+<td align="left">Designates the hemisphere with the window/electrode, options are (RH/LH/Both)</td>
+</tr>
+<tr class="even">
+<td align="left">Solenoid Pressure</td>
+<td align="left">The air pressure upstream of the solenoid in psi</td>
+</tr>
+<tr class="odd">
+<td align="left">Isoflurane time</td>
+<td align="left">Time when the animal was taken off of isoflurane</td>
+</tr>
+<tr class="even">
+<td align="left">Session ID</td>
+<td align="left">Description of the trial session</td>
+</tr>
+<tr class="odd">
+<td align="left">Amplifier Gain</td>
+<td align="left">The gain of the DAM80 amplifier</td>
+</tr>
+</tbody>
+</table>
+<p>The session notes are saved along with the analog data in the .tdms file.</p>
+<p>To add a field to &quot;Session Notes&quot;, create a string control on the front end and then drag the empty string into the &quot;Session Notes&quot; box. The label of the string control will become the label for the string in the .tdms file.</p>
+<p>To remove a field from &quot;Session Notes&quot;, click on the field and press the delete button.</p>
+<h4 id="file-settings">File Settings</h4>
+<p><img src="FileSettings.jpg" alt="Sets the temporary and permanent location for the files" /><br />
+Streaming image data to disk is faster if the memory location is on the C:/ drive. To prevent dropped frames, a temporary save location needs to be set up on the C:/ drive so that trial data can be streamed. After the trial is over the files can be moved to a final save location on any hard-drive of the user's choosing.</p>
+<table>
+<colgroup>
+<col width="45%" />
+<col width="54%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th align="left">Field</th>
+<th align="left">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Temporary path for streamed data</td>
+<td align="left">Path to location on C:/ drive for data to be streamed, files will not be stored here permanently</td>
+</tr>
+<tr class="even">
+<td align="left">Final saved file location</td>
+<td align="left">Desired final save location for the files</td>
+</tr>
+</tbody>
+</table>
+<h4 id="analog-acquisition-setup">Analog Acquisition Setup</h4>
+<p><img src="AnalogSetup.jpg" alt="Sets parameters for analog acquisition" /><br />
+This section contains user-defined parameters that alter the speed and physical channels for analog acquisition.</p>
+<table>
+<colgroup>
+<col width="28%" />
+<col width="71%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th align="left">Field</th>
+<th align="left">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Analog Sampling Rate</td>
+<td align="left">Rate of data acquisition for all physical channels in Hertz</td>
+</tr>
+<tr class="even">
+<td align="left">Physical Channels</td>
+<td align="left">Allows the user to set the physical channels on the BNC2090a that should be recorded</td>
+</tr>
+<tr class="odd">
+<td align="left">Channel Labels</td>
+<td align="left">Allows the user to give each physical channel a description so that the source of data in the .tdms file is not ambiguous</td>
+</tr>
+</tbody>
+</table>
+<p>In order to select multiple physical channels, click on the drop-down arrow and select &quot;browse&quot;. Use the shift and ctl keys to select the desired channels.</p>
+<blockquote>
+<p>Important: Note that the &quot;Channel Labels&quot; are specific to the number of physical channels. If you were to only record from two channels, you should delete all but two of entries in the &quot;Channel Labels&quot;. Failure to correctly align the labels with the physical channels will cause confusion when importing the data in to MATLAB.</p>
+</blockquote>
+<h4 id="camera-acquisition-setup">Camera Acquisition Setup</h4>
+<p><img src="CameraSetup.jpg" alt="Sets camera acquisition parameters" /><br />
+| Field | Description | | :-------------- | :------------------------------------------------------ | | CBVCam Rate | The acquisition frequency in frames per second of the camera responsible for imaging the cranial window | | WhiskerCam Rate | The acquisition frequency in frames per second of the camera responsible for imaging the whiskers | | WebCam Rate | The acquisition frequency in frames per second of the web camera | | CBV Cam trigger source | Allows the user to designate the hardware-based counter that generates the TTL pulse which triggers the camera imaging the cranial window| | Whisker Cam Trigger Source | Allows the user to designate the hardware-based counter that generates the TTL pulse which triggers the whisker camera | | WebCam ID | Allows the user to select the camera to be used to monitor behavior from a list of available cameras | | Whisker Cam ID | Allows the user to select the camera to be used to image the whiskers from a list of available cameras |</p>
+<h4 id="stimulation-settings">Stimulation Settings</h4>
+<p><img src="StimSetup.jpg" alt="Sets the solenoid firing pattern for the trial" /><br />
+</p>
+<table>
+<colgroup>
+<col width="32%" />
+<col width="67%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th align="left">Field</th>
+<th align="left">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Stim Ratios</td>
+<td align="left">These four numeric controls allow the user to set the ratio of puffs to various locations (right whisker pad, left whisker pad, tail, auditory control)</td>
+</tr>
+<tr class="even">
+<td align="left">Output Channels</td>
+<td align="left">The four drop-down menus allow the user to designate which physical channel on the BNC2090a controls each solenoid puffer</td>
+</tr>
+<tr class="odd">
+<td align="left">Inter-Stim Interval (s)</td>
+<td align="left">This field allows the user to designate the time separation (in seconds) between any subsequent puffs</td>
+</tr>
+<tr class="even">
+<td align="left">Stim Offset (s)</td>
+<td align="left">Allows the user to set the amount of time that LabVIEW waits after the start of a trial to administer the first puff</td>
+</tr>
+<tr class="odd">
+<td align="left">Stim Duration (s)</td>
+<td align="left">Allows the user to set the duration of the puff of air</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Examples of how to set the stimulation settings for a 5-minute trial</strong>:</p>
+<p><em>Example 1 settings:</em></p>
+<table>
+<thead>
+<tr class="header">
+<th align="left">Field</th>
+<th align="center">Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Right Pad Stim. Ratio</td>
+<td align="center">2</td>
+</tr>
+<tr class="even">
+<td align="left">Left Pad Stim. Ratio</td>
+<td align="center">1</td>
+</tr>
+<tr class="odd">
+<td align="left">Tail Stim. Ratio</td>
+<td align="center">1</td>
+</tr>
+<tr class="even">
+<td align="left">Auditory Stim. Ratio</td>
+<td align="center">1</td>
+</tr>
+<tr class="odd">
+<td align="left">Inter-Stim Interval (s)</td>
+<td align="center">60</td>
+</tr>
+<tr class="even">
+<td align="left">Stim Offset (s)</td>
+<td align="center">15</td>
+</tr>
+<tr class="odd">
+<td align="left">Stim Duration</td>
+<td align="center">0.1</td>
+</tr>
+</tbody>
+</table>
+<p>With these settings, two puffs will be administered to the right whisker pad, one to the left pad, one to the tail, and one as auditory control. The order of these puffs will be random. The puffs will occur every 60 seconds and the first puff will occur 15 seconds after the trial has started. All puffs will last 0.1 seconds.</p>
+<p><em>Example 2 settings:</em></p>
+<table>
+<thead>
+<tr class="header">
+<th align="left">Field</th>
+<th align="center">Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Right Pad Stim. Ratio</td>
+<td align="center">4</td>
+</tr>
+<tr class="even">
+<td align="left">Left Pad Stim. Ratio</td>
+<td align="center">1</td>
+</tr>
+<tr class="odd">
+<td align="left">Tail Stim. Ratio</td>
+<td align="center">0</td>
+</tr>
+<tr class="even">
+<td align="left">Auditory Stim. Ratio</td>
+<td align="center">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Inter-Stim Interval (s)</td>
+<td align="center">30</td>
+</tr>
+<tr class="even">
+<td align="left">Stim Offset (s)</td>
+<td align="center">10</td>
+</tr>
+<tr class="odd">
+<td align="left">Stim Duration</td>
+<td align="center">0.5</td>
+</tr>
+</tbody>
+</table>
+<p>With these settings, four puffs will be administered to the right pad for every puff to the left whisker pad. The puffs will occur every 30 seconds and the first puff will occur 10 seconds after the trial has started. All puffs will last 0.5 seconds. However, this puffing protocol only explicitly controls the puffs for the first 2.5 minutes (5 puffs every 30 seconds). After the 5 puffs (4 to right pad, 1 to left pad) have been administered, the puffing order will start over until the trial finishes. This means that 10 puffs will occur in 5 minutes, rather than the 5 puffs explicitly called for.</p>
+<h3 id="displays">Displays</h3>
+<h4 id="current-file-name">Current file name</h4>
+<p><img src="CurrFilename.jpg" alt="Shows the current filename" /><br />
+This display shows the name of the current file. The file name is a unique time-stamp of the form YYMMDD_hh_mm_ss.</p>
+<h4 id="analog-acquisition-length">Analog acquisition length</h4>
+<p>This display shows the number of acquired data points in a single channel of analog data.</p>
+<h4 id="solenoid-indicator-solenoids">Solenoid indicator solenoids</h4>
+<p><img src="SolIndicator.jpg" alt="Real-time display of solenoid firing" /><br />
+This display shows when each of the solenoids fire during the trial. A firing solenoid will turn green for the duration of the puff.</p>
+<h4 id="stop-indicator-leds">Stop indicator LEDs</h4>
+<p><img src="StopIndicator.jpg" alt="Indicates when acquisition loops stop" /><br />
+These indicate when the loops responsible for recording images from the CBV camera, data from analog channels, and images from the whisker camera have been terminated.</p>
+<h4 id="frame-rate-gauges">Frame rate gauges</h4>
+<p><img src="FrameRateGauge.jpg" alt="Frame rate displays" /><br />
+During image acquisition, LabVIEW detects the speed of the cameras and displays it here. To ensure that the cameras are working properly, compare the requested acquisition rates in the &quot;Camera Acquisition Setup&quot; section to the detected frame rates here.</p>
+<h4 id="dropped-whisker-camera-frames">Dropped Whisker Camera frames</h4>
+<p><img src="DropFrame.jpg" alt="Dropped frame display" /><br />
+Due to the high speed of the whisker camera and variable loads of the computer, the whisker camera occasionally drops frames. The gauge shows the number of dropped frames during the current trial. The table shows the frame index that was dropped and the number of frames that were dropped at that index.</p>
+<blockquote>
+<p>Important: With recent changes to the computers in the ESM department, the number of dropped frames can occasionally get rather high. If you notice that the camera continuously drops frames, try unplugging the ethernet cable after LabVIEW is open. It is unclear why this works, but it may block updates or web-based processes from occuring during data acquisition.</p>
+</blockquote>
+<h4 id="webcam-image-display">WebCam image display</h4>
+<p><img src="WebCam.jpg" /><br />
+Displays the current view from the web camera.</p>
+<h2 id="additional-code-to-supplement-labview-acquisition">Additional code to supplement LabVIEW acquisition</h2>
+<h4 id="arduino-script-for-controlling-led-flashing">Arduino script for controlling LED flashing</h4>
+<p>This code controls an Arduino that receives TTL pulses from external sources and distributes them to cameras and LEDs.</p>
+<p>The Arduino receives a logical signal from the BNC2090a (called &quot;trialstate&quot; below) to indicate whether data acquisition is occurring or not. When acquisition occurs, the arduino code looks for the trigger on the channel that receives the TTL pulse from the onboard counter and redistributes the TTL to the IOS camera as well as the appropriate LEDs. When the logical signal indicates that acquisition is not occurring, the arduino code looks for TTL pulses from an external waveform generator and redistributes the signal to the LEDs only.</p>
+<div class="sourceCode"><pre class="sourceCode c"><code class="sourceCode c">trialstate=digitalRead(trial_on);  <span class="co">//looks at the state of the trial, so that it knows where to acquire its input</span>
+ digitalWrite(monitor,trialstate); <span class="co">//for testing purposes</span>
+ <span class="cf">if</span> (trialstate == HIGH)
+ {
+   inp_source = <span class="dv">2</span>;
+   Serial.println(<span class="st">&quot;Trigger from BNC&quot;</span>);
+   <span class="cf">if</span> (lasttrialstate == <span class="dv">0</span>)
+   {
+     lastLED1state = <span class="dv">1</span>; <span class="co">// ensure that the first flash of every new trial is from LED2</span>
+     lastLED2state = <span class="dv">0</span>;
+     lastLED3state = <span class="dv">0</span>;
+   }
+   lasttrialstate = <span class="dv">1</span>;
+ }
+ <span class="cf">else</span>
+ {
+   inp_source = <span class="dv">3</span>;
+   Serial.println(<span class="st">&quot;Trigger from WG&quot;</span>);
+   lasttrialstate = <span class="dv">0</span>;
+ }</code></pre></div>
+<h4 id="processing-the-.tdms-files">Processing the .tdms files</h4>
+<p>Analog data and trial notes can be imported into MATLAB using the function convertTDMS which was written by Robert Seltzer. The function can be found on the <a href="https://www.mathworks.com/matlabcentral/fileexchange/44206-converttdms--v10-">Mathworks File Exchange</a>.</p>
+<p>After data have been imported using convertTDMS, the labels of the analog data can be acquired using the following code:</p>
+<div class="sourceCode"><pre class="sourceCode matlab"><code class="sourceCode matlab"><span class="co">% Convert .tdms file into a data structure</span>
+[tempStruct,~]=convertTDMS(<span class="fl">0</span>,filename);
+
+<span class="co">% Retrieve and name the measured data channels</span>
+channelLabels = {tempStruct.Data.MeasuredData(:).Name};</code></pre></div>
+<p>The trial notes can be acquired using the following code:</p>
+<div class="sourceCode"><pre class="sourceCode matlab"><code class="sourceCode matlab"><span class="co">% Add trial notes to the structure</span>
+tdmsData.Info = tempStruct.Data.Root;
+
+<span class="co">% Convert the numeric fields of the trial notes to integers</span>
+fnames = fieldnames(tdmsData.Info);
+for fn = <span class="fl">1</span>:length(fnames)
+    [converted,status] = str2num(tdmsData.Info.(fnames{fn}));
+    if status
+        tdmsData.Info.(fnames{fn}) = converted;
+    end
+end</code></pre></div>
+<h4 id="importing-the-ios-frames">Importing the IOS frames</h4>
+<p>The image data can be imported from the binary files for both the IOS and whisker camera using the function: <code>ReadBinaryFileToMatrix.m</code>. The size of the images in pixels, the bit-depth of the pixels, and the byte-ordering (little/big endian) is required to run this function. See the script help for more information. These inputs are available in the trial notes within the .tdms file (see section above on importing .tdms data):</p>
+<div class="sourceCode"><pre class="sourceCode matlab"><code class="sourceCode matlab"><span class="co">% For IOS camera</span>
+ImgParams.height = TDMSData.Info.CBV_Cam_Height_pix;
+ImgParams.width = TDMSData.Info.CBV_Cam_Width_pix;
+ImgParams.bitDepth = <span class="st">&#39;uint16&#39;</span>;
+[Frames]=ReadBinaryFileToMatrix([fileID <span class="st">&#39;_WindowCam.bin&#39;</span>],ImgParams.height,...
+    ImgParams.width,ImgParams.bitDepth,<span class="st">&#39;b&#39;</span>);</code></pre></div>
+<h4 id="tracking-whiskers">Tracking whiskers</h4>
+<p>The whisker images are imported into a MATLAB array using the function used for IOS images.</p>
+<div class="sourceCode"><pre class="sourceCode matlab"><code class="sourceCode matlab"><span class="co">% For whisker camera</span>
+ImgParams.height = TDMSData.Info.Whisker_Cam_Height_pix;
+ImgParams.width = TDMSData.Info.Whisker_Cam_Width_pix;
+ImgParams.bitDepth = <span class="st">&#39;uint8&#39;</span>;
+whiskCam_frames = ReadBinaryFileToMatrix(filename,...
+    ImgParams.height, ImgParams.width, ImgParams.bitDepth, <span class="st">&#39;l&#39;</span>);</code></pre></div>
+<p>The <a href="https://en.wikipedia.org/wiki/Radon_transform">radon transform</a> is used to convert the whisker images into a mean angle. The radon transform takes a series of line integrals of the intensities at various positions and angles within the whisker image. In order to penalize lines with angles that deviate from the true whisker angle, the gradient of the whisker images is taken:</p>
+<div class="sourceCode"><pre class="sourceCode matlab"><code class="sourceCode matlab"><span class="co">% Calculate the gradient of each image to emphasize whisker edges</span>
+imgType = class(whiskCam_frames);
+imageGradients = zeros(size(whiskCam_frames),imgType);
+for frameNum = <span class="fl">1</span>:size(whiskCam_frames,<span class="fl">3</span>)
+    indFrame = whiskCam_frames(:,:,frameNum);
+    indFrame_gradient = gradient(double(indFrame));
+    imageGradients(:,:,frameNum) = cast(indFrame_gradient,imgType);
+end</code></pre></div>
+<p>The radon transform is amenable to parallel computation. A GPU is used to decrease the time needed to calculate the transform.</p>
+<div class="sourceCode"><pre class="sourceCode matlab"><code class="sourceCode matlab"><span class="co">% Transfer the images to the GPU</span>
+gpu_frame = gpuArray(imageGradients);
+
+<span class="co">% PreAllocate array of whisker angles, use NaN as a place holder</span>
+whiskerAngle = NaN*ones(<span class="fl">1</span>,length(imageGradients));
+for f = <span class="fl">1</span>:(length(imageGradients)-<span class="fl">1</span>);
+    <span class="co">% Radon on individual frame</span>
+    [R,~] = radon(gpu_frame(:,:,f),theta);
+
+    <span class="co">% Get transformed image from GPU and calculate the variance</span>
+    col_var = var(gather(R));
+
+    <span class="co">% Sort the columns according to variance</span>
+    ord_var = sort(col_var);
+
+    <span class="co">% Choose the top 0.1*number columns with the highest variance</span>
+    thresh = round(numel(ord_var)*<span class="fl">0.9</span>);
+    sieve = gt(col_var,ord_var(thresh));
+
+    <span class="co">% Associate the columns with the corresponding whisker angle</span>
+    angles = nonzeros(theta.*sieve);
+
+    <span class="co">% Calculate the average of the whisker angles</span>
+    whiskerAngle(f) = mean(angles);
+end</code></pre></div>
